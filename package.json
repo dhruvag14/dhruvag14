@@ -1,0 +1,16 @@
+{
+  "name": "dhruvag14-profile",
+  "private": true,
+  "description": "Generates the themed SVG artwork for the GitHub profile README.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "@fontsource/instrument-sans": "5.1.0",
+    "@fontsource/instrument-serif": "5.1.0",
+    "@fontsource/jetbrains-mono": "5.1.0",
+    "@fontsource/syne": "5.1.0",
+    "opentype.js": "1.3.4"
+  }
+}
