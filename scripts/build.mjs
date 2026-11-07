@@ -609,8 +609,9 @@ function footer() {
 /* ======================================================================
    Write everything
    ====================================================================== */
-const jobs = {
-  hero,
+// Only the hero banner is used in the README. The other section designs are kept
+// below; set ALL_SECTIONS=1 to generate them too (e.g. to bring a section back).
+const extra = {
   about,
   missions,
   research,
@@ -620,6 +621,7 @@ const jobs = {
   "work-header": (t) => header(t, { index: "03", label: "Projects", solid: "SELECTED", outline: "WORK", blurb: "Models that leave the notebook: sensors, clouds and real users." }),
   ...Object.fromEntries(DATA.projects.map((p, i) => [`project-${p.slug}`, (t) => project(t, p, i)])),
 };
+const jobs = { hero, ...(process.env.ALL_SECTIONS ? extra : {}) };
 
 for (const [name, fn] of Object.entries(jobs)) {
   for (const t of Object.values(THEMES)) {
