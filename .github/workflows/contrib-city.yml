@@ -1,0 +1,47 @@
+name: Update contribution city
+
+on:
+  schedule:
+    - cron: "17 0 * * *" # daily, 00:17 UTC
+  workflow_dispatch: # allow manual runs from the Actions tab
+  push:
+    branches: [main]
+    paths: ["scripts/**", ".github/workflows/contrib-city.yml"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: contrib-city
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Draw the 3D contribution city
+        run: node scripts/contrib.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_LOGIN: ${{ github.repository_owner }}
+
+      - name: Commit if it changed
+        run: |
+          if git diff --quiet -- assets; then
+            echo "No changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/contrib-city-*.svg
+          git commit -m "Update contribution city"
+          git push
