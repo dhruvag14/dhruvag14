@@ -1,7 +1,7 @@
 // Draws the past year of GitHub contributions as an isometric "3D city" in the
 // portfolio palette, writing assets/contrib-city-light.svg and -dark.svg.
 //
-// The city sits between two seas. An original kaiju surfaces at random spots
+// The city sits between two seas. An original kaiju rises at random spots
 // (seeded by the date, so every daily render differs), flattens a block of
 // towers, shoots down helicopters with its breath, and sinks back. Everything
 // runs on one CSS animation clock so the events stay in sync.
@@ -65,29 +65,59 @@ const pt = (x, y, z) => iso(x, y, z).map((v) => v.toFixed(1)).join(",");
 const NW = weeks.length;
 
 /* ---------- the scene script (same for both themes) ---------- */
-const T = 36; // seconds per loop
+// A loop is three normal attacks plus one "berserk" event, in a date-seeded
+// order, so each daily render plays a different sequence.
 const seed = Number(days.at(-1).date.replace(/-/g, ""));
 const R = rng(seed);
 const MOUTH = [70, -127]; // kaiju mouth relative to its feet (after scaling)
 const SEA = { back: { sea: -2.0, land: 1.4 }, front: { sea: 8.9, land: 5.4 } };
+const DEPTH = 178; // how far below the waterline the kaiju hides
+const DUR = { attack: 11, berserk: 15.5 };
 
-const attacks = [];
-for (const [k, side] of ["back", "front", R() < 0.5 ? "back" : "front"].entries()) {
+const order = ["attack", "attack", "attack"];
+order.splice(Math.floor(R() * 4), 0, "berserk");
+
+const events = [];
+let clock = 0.5;
+for (const [k, type] of order.entries()) {
+  const side = R() < 0.5 ? "back" : "front";
   let gx;
-  do gx = 4 + Math.floor(R() * (NW - 9));
-  while (attacks.some((a) => Math.abs(a.gx - gx) < 12));
-  const s = 1 + k * 12;
+  if (type === "berserk") gx = 12 + Math.floor(R() * (NW - 25));
+  else
+    do gx = 4 + Math.floor(R() * (NW - 9));
+    while (events.some((e) => e.type === "attack" && Math.abs(e.gx - gx) < 10));
+  const s = clock;
+  clock += DUR[type];
   const [seaX, seaY] = iso(gx + 0.5, SEA[side].sea);
   const [kx, ky] = iso(gx + 0.5, SEA[side].land);
   const dir = kx < 260 ? 1 : kx > 740 ? -1 : R() < 0.5 ? 1 : -1;
   const mouth = [kx + dir * MOUTH[0], ky + MOUTH[1]];
-  const hit = [mouth[0] + dir * (150 + R() * 110), Math.min(255, Math.max(160, mouth[1] - 10 - R() * 50))];
-  const flyDir = R() < 0.5 ? 1 : -1;
-  attacks.push({ k, side, gx, gy: (SEA[side].land - 0.5), s, sea: [seaX, seaY], land: [kx, ky], dir, mouth, hit, flyDir });
+  const e = { k, type, side, gx, gy: SEA[side].land - 0.5, s, sea: [seaX, seaY], land: [kx, ky], dir, mouth };
+  // timeline (absolute seconds)
+  e.surfaced = s + 2.2;
+  e.stomp = s + 3.4;
+  e.wadeBack = type === "berserk" ? s + 9.6 : s + 7.0;
+  e.sinkStart = e.wadeBack + 1.2;
+  e.sinkEnd = e.sinkStart + 2.2;
+  if (type === "attack") {
+    e.hitAt = s + 5.2; // breath reaches the helicopter
+    e.hit = [mouth[0] + dir * (150 + R() * 110), Math.min(255, Math.max(160, mouth[1] - 10 - R() * 50))];
+    e.flyDir = R() < 0.5 ? 1 : -1;
+  } else {
+    e.beamStart = s + 5.6; // 360° sweep lasts 3 s
+    e.beamEnd = s + 8.6;
+    e.a0 = dir > 0 ? 0 : 180;
+    // a news helicopter hovering nearby, caught by the sweep
+    e.chopper = [Math.min(930, Math.max(70, kx + (R() < 0.5 ? -1 : 1) * (180 + R() * 160))), 175 + R() * 50];
+    const ang = (Math.atan2(e.chopper[1] - mouth[1], e.chopper[0] - mouth[0]) * 180) / Math.PI;
+    e.chopperHit = e.beamStart + ((((ang - e.a0) % 360) + 360) % 360 / 360) * 3;
+  }
+  events.push(e);
 }
+const T = Number((clock + 0.5).toFixed(2)); // seconds per loop
 
 const at = (sec) => `${Math.min(100, Math.max(0, (sec / T) * 100)).toFixed(3)}%`;
-/** Build @keyframes from [seconds, declarations] pairs, padding 0% and 100%. */
+/** @keyframes from absolute [seconds, declarations] pairs, padding 0% and 100%. */
 function keyframes(name, frames) {
   const sorted = [...frames].sort((a, b) => a[0] - b[0]);
   const out = [];
@@ -96,7 +126,11 @@ function keyframes(name, frames) {
   if (sorted.at(-1)[0] < T) out.push(`100%{${sorted.at(-1)[1]}}`);
   return `@keyframes ${name}{${out.join("")}}`;
 }
+/** Same, but times are relative; the element's animation-delay places it in the loop. */
+const relKeyframes = keyframes;
 const tr = ([x, y], dy = 0, extra = "") => `transform:translate(${x.toFixed(1)}px,${(y + dy).toFixed(1)}px)${extra}`;
+const EASE_OUT = "animation-timing-function:cubic-bezier(.16,.8,.3,1)";
+const EASE_IN = "animation-timing-function:cubic-bezier(.6,0,.85,.35)";
 
 /* ---------- sprites ---------- */
 function shade(hex, f) {
@@ -193,25 +227,87 @@ function sea(t, gy0, gy1, cls) {
 
 function city(t) {
   const tops = [t.name === "dark" ? "#2a4a55" : "#e9cfa8", C.sage, "#d86a4f", C.red, "#ff9a7d"];
+  const smokeFill = t.name === "dark" ? "#cfc6b8" : "#6f7f80";
+  const R2 = rng(seed + 7); // separate stream so both themes get identical scenes
   const css = [];
+  let defs = "";
+  let fx = ""; // debris, dust, splashes (above the city, below the actors)
+  let smokeFx = ""; // smoke and fire, drawn in front of the kaiju so it never hides them
+  let actors = "";
 
-  // which towers each attack flattens
-  const smashedBy = new Map();
-  for (const a of attacks) {
-    for (let gx = a.gx - 2; gx <= a.gx + 2; gx++)
-      for (let gy = 0; gy < 7; gy++) if (Math.abs(gy - a.gy) <= 2.6 && R() > 0.12) smashedBy.set(`${gx},${gy}`, a.k);
-    const hitAt = a.s + 2.6;
+  /* ---------- shared relative keyframes (placed in the loop with animation-delay) ---------- */
+  css.push(
+    relKeyframes("crumble", [
+      [0, "transform:none"],
+      [0.25, "transform:skewX(8deg) scaleY(.92)"],
+      [0.6, "transform:skewX(-6deg) scaleY(.5)"],
+      [1.1, "transform:skewX(-14deg) scaleY(.1)"],
+      [8, "transform:skewX(-14deg) scaleY(.1)"],
+      [8.5, "transform:scaleY(1.08)"],
+      [8.8, "transform:none"],
+    ]),
+    `.cr{animation:crumble ${T}s linear infinite;transform-box:fill-box;transform-origin:50% 100%}`,
+    relKeyframes("nova", [
+      [0, "transform:none"],
+      [0.2, "transform:skewX(12deg) scaleY(.85)"],
+      [0.55, "transform:skewX(-18deg) scaleY(.07)"],
+      [7, "transform:skewX(-18deg) scaleY(.07)"],
+      [7.5, "transform:scaleY(1.1)"],
+      [7.8, "transform:none"],
+    ]),
+    `.nv{animation:nova ${T}s linear infinite;transform-box:fill-box;transform-origin:50% 100%}`,
+    relKeyframes("smoke", [
+      [0, "transform:translate(0,0) scale(.3);opacity:0"],
+      [0.4, "transform:translate(0,-8px) scale(.6);opacity:.85"],
+      [5, "transform:translate(8px,-95px) scale(2.1);opacity:0"],
+    ]),
+    `.sm{animation:smoke ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`,
+    relKeyframes("fire", [
+      [0, "transform:scale(.2);opacity:0"],
+      [0.3, "transform:scale(1);opacity:.95"],
+      [3.4, "transform:scale(.85);opacity:.7"],
+      [4.4, "transform:scale(.2);opacity:0"],
+    ]),
+    `.fi{animation:fire ${T}s linear infinite;transform-box:fill-box;transform-origin:50% 100%;opacity:0}`
+  );
+
+  const plume = (x, y, delay, n = 4, big = 1, cls = "") => {
+    let out = "";
+    for (let j = 0; j < n; j++)
+      out += `<circle cx="${(x + (R2() - 0.5) * 8).toFixed(1)}" cy="${y.toFixed(1)}" r="${(12 * big).toFixed(1)}" fill="${smokeFill}" class="sm${cls && j === 1 ? ` ${cls}` : ""}" style="animation-delay:${(delay + j * 0.75).toFixed(2)}s"/>`;
+    return out;
+  };
+  const fire = (x, y, delay) =>
+    `<g class="fi" style="animation-delay:${delay.toFixed(2)}s"><path d="M${x - 7},${y} Q${x - 6},${y - 14} ${x},${y - 22} Q${x + 6},${y - 13} ${x + 7},${y} Z" fill="${C.red}"/><path d="M${x - 3.5},${y} Q${x - 3},${y - 8} ${x},${y - 13} Q${x + 3},${y - 7} ${x + 3.5},${y} Z" fill="#ffb36b"/></g>`;
+  let debrisN = 0;
+  const debris = (x, y, delay, spread = 1) => {
+    const i = debrisN++;
+    const dx = (R2() - 0.5) * 90 * spread;
+    const up = 25 + R2() * 45 * spread;
+    const fall = 10 + R2() * 25;
+    const rot = (R2() - 0.5) * 540;
     css.push(
-      keyframes(`smash${a.k}`, [
-        [hitAt - 0.01, "transform:none"],
-        [hitAt + 0.35, "transform:scaleY(.1) skewX(-12deg)"],
-        [hitAt + 8, "transform:scaleY(.1) skewX(-12deg)"],
-        [hitAt + 8.6, "transform:scaleY(1.1)"],
-        [hitAt + 8.9, "transform:none"],
-      ]),
-      `.smash${a.k}{animation:smash${a.k} ${T}s linear infinite;transform-box:fill-box;transform-origin:50% 100%}`
+      relKeyframes(`db${i}`, [
+        [0, "transform:translate(0,0) rotate(0deg);opacity:0"],
+        [0.05, "transform:translate(0,0) rotate(0deg);opacity:1"],
+        [0.5, `transform:translate(${(dx * 0.55).toFixed(1)}px,${(-up).toFixed(1)}px) rotate(${(rot / 2).toFixed(0)}deg);opacity:1`],
+        [1.3, `transform:translate(${dx.toFixed(1)}px,${fall.toFixed(1)}px) rotate(${rot.toFixed(0)}deg);opacity:0`],
+      ])
     );
-  }
+    const s = 2 + R2() * 3;
+    return `<rect x="${(x - s / 2).toFixed(1)}" y="${(y - s / 2).toFixed(1)}" width="${s.toFixed(1)}" height="${s.toFixed(1)}" fill="${tops[1 + Math.floor(R2() * 4)]}" style="animation:db${i} ${T}s linear ${delay.toFixed(2)}s infinite;transform-box:fill-box;transform-origin:center;opacity:0"/>`;
+  };
+
+  /* ---------- towers ---------- */
+  const crumbleDelay = new Map();
+  const firstAttack = events.find((e) => e.type === "attack");
+  for (const e of events.filter((x) => x.type === "attack"))
+    for (let gx = e.gx - 2; gx <= e.gx + 2; gx++)
+      for (let gy = 0; gy < 7; gy++) {
+        const dist = Math.hypot(gx - e.gx, (gy - e.gy) * 0.6);
+        if (Math.abs(gy - e.gy) <= 2.6 && R2() > 0.1) crumbleDelay.set(`${gx},${gy}`, { delay: e.stomp + dist * 0.07, freeze: e === firstAttack });
+      }
+  const berserk = events.find((e) => e.type === "berserk");
 
   const cells = [];
   weeks.forEach((w, gx) => w.forEach((d) => cells.push({ gx, gy: d.weekday, d })));
@@ -223,137 +319,294 @@ function city(t) {
     const h = d.contributionCount ? 4 + Math.log1p(d.contributionCount) * 15 : 1.5;
     const g = 0.12;
     const [a, b, c, e] = [gx + g, gy + g, gx + 1 - g, gy + 1 - g];
-    const k = smashedBy.get(`${gx},${gy}`);
-    bars += `<g class="bar" style="animation-delay:${(0.2 + gx * 0.025).toFixed(2)}s"><g${k !== undefined ? ` class="smash${k}"` : ""}>
+    const cr = crumbleDelay.get(`${gx},${gy}`);
+    const [cx, cy] = iso(gx + 0.5, gy + 0.5);
+    const nvDelay = berserk.beamStart + 0.15 + Math.hypot(cx - berserk.land[0], cy - berserk.land[1]) / 650;
+    bars += `<g class="bar" style="animation-delay:${(0.2 + gx * 0.025).toFixed(2)}s">${
+      cr ? `<g class="cr${cr.freeze ? " crF" : ""}" style="animation-delay:${cr.delay.toFixed(2)}s">` : "<g>"
+    }<g class="nv" style="animation-delay:${nvDelay.toFixed(2)}s">
 <polygon points="${pt(a, e, h)} ${pt(c, e, h)} ${pt(c, e, 0)} ${pt(a, e, 0)}" fill="${shade(top, 0.62)}"/>
 <polygon points="${pt(c, b, h)} ${pt(c, e, h)} ${pt(c, e, 0)} ${pt(c, b, 0)}" fill="${shade(top, 0.8)}"/>
-<polygon points="${pt(a, b, h)} ${pt(c, b, h)} ${pt(c, e, h)} ${pt(a, e, h)}" fill="${top}"/></g></g>`;
+<polygon points="${pt(a, b, h)} ${pt(c, b, h)} ${pt(c, e, h)} ${pt(a, e, h)}" fill="${top}"/></g></g></g>`;
   }
 
-  // kaiju appearances, beams, helicopters, explosions
-  let actors = "";
-  let defs = "";
-  for (const a of attacks) {
-    const { k, s, sea: sp, land, dir, mouth, hit, flyDir } = a;
-    // kaiju: surface, wade in, stomp, hold, wade out, sink
+  /* ---------- earthquakes: one keyframes track for the whole city ---------- */
+  const quakes = [];
+  for (const e of events) {
+    quakes.push([e.stomp, 0.8, 2.6]);
+    if (e.type === "berserk") quakes.push([e.s + 3.7, 1.8, 1.3], [e.beamStart, 3.3, 5]);
+  }
+  quakes.sort((a, b) => a[0] - b[0]);
+  const qf = [[0, "transform:none"]];
+  for (const [t0, d, amp] of quakes) {
+    qf.push([t0 - 0.01, "transform:none"]);
+    for (let tt = t0; tt < t0 + d; tt += 0.06) {
+      const fade = 1 - (tt - t0) / d;
+      qf.push([tt, `transform:translate(${((R2() - 0.5) * 2 * amp * fade).toFixed(2)}px,${((R2() - 0.5) * 1.4 * amp * fade).toFixed(2)}px)`]);
+    }
+    qf.push([t0 + d, "transform:none"]);
+  }
+  css.push(keyframes("quake", qf), `.quake{animation:quake ${T}s linear infinite}`);
+
+  /* ---------- per-event actors ---------- */
+  defs += `<clipPath id="wl" clipPathUnits="userSpaceOnUse"><rect x="-500" y="-700" width="1000" height="706"/></clipPath>`;
+  defs += `<radialGradient id="aura"><stop offset="0" stop-color="#b98cff" stop-opacity=".75"/><stop offset=".6" stop-color="#7a6bff" stop-opacity=".35"/><stop offset="1" stop-color="#7a6bff" stop-opacity="0"/></radialGradient>`;
+
+  for (const e of events) {
+    const { k, s, sea: sp, land, dir, mouth } = e;
+
+    // kaiju: position track (surface → wade in → hold → wade out → sink) + depth track
     css.push(
       keyframes(`kz${k}`, [
-        [s - 0.01, `${tr(sp, 80)};opacity:0`],
-        [s, `${tr(sp, 80)};opacity:1`],
-        [s + 1.2, `${tr(sp)};opacity:1`],
-        [s + 2.6, `${tr(land)};opacity:1`],
-        [s + 6.6, `${tr(land)};opacity:1`],
-        [s + 8, `${tr(sp)};opacity:1`],
-        [s + 9, `${tr(sp, 80)};opacity:1`],
-        [s + 9.01, `${tr(sp, 80)};opacity:0`],
+        [s - 0.01, `${tr(sp)};opacity:0`],
+        [s, `${tr(sp)};opacity:1`],
+        [e.surfaced, `${tr(sp)};opacity:1`],
+        [e.stomp, `${tr(land)};opacity:1`],
+        [e.wadeBack, `${tr(land)};opacity:1`],
+        [e.sinkStart, `${tr(sp)};opacity:1`],
+        [e.sinkEnd, `${tr(sp)};opacity:1`],
+        [e.sinkEnd + 0.01, `${tr(sp)};opacity:0`],
       ]),
-      `.kz${k}{animation:kz${k} ${T}s linear infinite;opacity:0}`
-    );
-    actors += `<g class="kz${k}"><g transform="scale(${dir},1)">${kaiju(t)}</g></g>`;
-
-    // splash rings where it surfaces and sinks
-    css.push(
-      keyframes(`sp${k}`, [
-        [s - 0.01, "transform:scale(.2);opacity:0"],
-        [s + 0.1, "transform:scale(.3);opacity:.9"],
-        [s + 1.4, "transform:scale(1.4);opacity:0"],
-        [s + 8.4, "transform:scale(.3);opacity:0"],
-        [s + 8.5, "transform:scale(.3);opacity:.9"],
-        [s + 9.8, "transform:scale(1.4);opacity:0"],
+      `.kz${k}{animation:kz${k} ${T}s linear infinite;opacity:0}`,
+      keyframes(`rs${k}`, [
+        [s, `transform:translateY(${DEPTH}px);${EASE_OUT}`],
+        [e.surfaced, "transform:translateY(0)"],
+        [e.sinkStart, `transform:translateY(0);${EASE_IN}`],
+        [e.sinkEnd, `transform:translateY(${DEPTH}px)`],
       ]),
-      `.sp${k}{animation:sp${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`
+      `.rs${k}{animation:rs${k} ${T}s linear infinite}`,
+      keyframes(`fm${k}`, [
+        [s, "opacity:0"],
+        [s + 0.2, "opacity:1"],
+        [e.surfaced + 0.4, "opacity:1"],
+        [e.surfaced + 0.9, "opacity:0"],
+        [e.wadeBack + 0.7, "opacity:0"],
+        [e.sinkStart, "opacity:1"],
+        [e.sinkEnd + 0.3, "opacity:1"],
+        [e.sinkEnd + 0.8, "opacity:0"],
+      ]),
+      `.fm${k}{animation:fm${k} ${T}s linear infinite;opacity:0}`
     );
-    actors += `<ellipse cx="${sp[0].toFixed(1)}" cy="${sp[1].toFixed(1)}" rx="48" ry="12" fill="none" stroke="${C.cream}" stroke-width="2.5" class="sp${k}"/>`;
+    const aura =
+      e.type === "berserk"
+        ? `<circle cx="0" cy="-95" r="105" fill="url(#aura)" class="au${k}"/>`
+        : "";
+    actors += `<g class="kz${k}">
+      <g clip-path="url(#wl)"><g class="rs${k}">${aura}<g transform="scale(${dir},1)">${kaiju(t)}</g></g></g>
+      <ellipse cx="0" cy="1" rx="44" ry="9" fill="none" stroke="${C.cream}" stroke-width="2" class="fm${k}">
+        <animate attributeName="rx" values="38;54;38" dur="1.6s" repeatCount="indefinite"/>
+        <animate attributeName="ry" values="8;12;8" dur="1.6s" repeatCount="indefinite"/>
+      </ellipse>
+    </g>`;
 
-    // dust burst when it stomps the towers
+    // splash droplets as the head breaks the surface, and again as it goes under
+    for (let i = 0; i < 9; i++) {
+      const dx = (i - 4) * 9 + (R2() - 0.5) * 6;
+      const up = 30 + R2() * 40;
+      css.push(
+        relKeyframes(`dr${k}_${i}`, [
+          [0, "transform:translate(0,0);opacity:0"],
+          [0.05, "transform:translate(0,0);opacity:1"],
+          [0.45, `transform:translate(${(dx * 0.6).toFixed(1)}px,${(-up).toFixed(1)}px);opacity:1`],
+          [1.0, `transform:translate(${dx.toFixed(1)}px,8px);opacity:0`],
+        ])
+      );
+      for (const delay of [s + 0.15, e.sinkEnd - 0.75])
+        fx += `<circle cx="${sp[0].toFixed(1)}" cy="${(sp[1] - 4).toFixed(1)}" r="${(2 + R2() * 2).toFixed(1)}" fill="${C.cream}" style="animation:dr${k}_${i} ${T}s linear ${delay.toFixed(2)}s infinite;opacity:0"/>`;
+    }
+
+    // stomp: dust ring, debris, smoke
     css.push(
       keyframes(`du${k}`, [
-        [s + 2.55, "transform:scale(.2);opacity:0"],
-        [s + 2.65, "transform:scale(.4);opacity:.85"],
-        [s + 3.8, "transform:scale(1.5);opacity:0"],
+        [e.stomp - 0.05, "transform:scale(.2);opacity:0"],
+        [e.stomp + 0.05, "transform:scale(.4);opacity:.85"],
+        [e.stomp + 1.3, "transform:scale(1.6);opacity:0"],
       ]),
       `.du${k}{animation:du${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`
     );
-    actors += `<ellipse cx="${land[0].toFixed(1)}" cy="${(land[1] - 6).toFixed(1)}" rx="60" ry="16" fill="${C.cream}" class="du${k}"/>`;
+    fx += `<ellipse cx="${land[0].toFixed(1)}" cy="${(land[1] - 4).toFixed(1)}" rx="62" ry="16" fill="${C.cream}" class="du${k}"/>`;
 
-    // breath: charge glow at the mouth, then a beam to the helicopter
-    const len = Math.hypot(hit[0] - mouth[0], hit[1] - mouth[1]).toFixed(0);
-    defs += `<linearGradient id="beam${k}" gradientUnits="userSpaceOnUse" x1="${mouth[0].toFixed(1)}" y1="${mouth[1].toFixed(1)}" x2="${hit[0].toFixed(1)}" y2="${hit[1].toFixed(1)}"><stop offset="0" stop-color="#7a8cff"/><stop offset=".55" stop-color="#9b6bff"/><stop offset="1" stop-color="#c25cff"/></linearGradient>`;
-    css.push(
-      keyframes(`ch${k}`, [
-        [s + 3.4, "transform:scale(.2);opacity:0"],
-        [s + 4.1, "transform:scale(1.2);opacity:1"],
-        [s + 5.3, "transform:scale(1);opacity:1"],
-        [s + 5.7, "transform:scale(.2);opacity:0"],
-      ]),
-      `.ch${k}{animation:ch${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`,
-      keyframes(`bm${k}`, [
-        [s + 4.15, `stroke-dashoffset:${len};opacity:0`],
-        [s + 4.2, `stroke-dashoffset:${len};opacity:1`],
-        [s + 4.6, "stroke-dashoffset:0;opacity:1"],
-        [s + 5.3, "stroke-dashoffset:0;opacity:1"],
-        [s + 5.7, "stroke-dashoffset:0;opacity:0"],
-      ]),
-      `.bm${k}{animation:bm${k} ${T}s linear infinite;stroke-dasharray:${len};opacity:0}`
-    );
-    actors += `
-      <circle cx="${mouth[0].toFixed(1)}" cy="${mouth[1].toFixed(1)}" r="13" fill="url(#beam${k})" filter="url(#glow)" class="ch${k}"/>
-      <line x1="${mouth[0].toFixed(1)}" y1="${mouth[1].toFixed(1)}" x2="${hit[0].toFixed(1)}" y2="${hit[1].toFixed(1)}" stroke="url(#beam${k})" stroke-width="16" stroke-linecap="round" filter="url(#glow)" class="bm${k}"/>
-      <line x1="${mouth[0].toFixed(1)}" y1="${mouth[1].toFixed(1)}" x2="${hit[0].toFixed(1)}" y2="${hit[1].toFixed(1)}" stroke="#eef0ff" stroke-width="4" stroke-linecap="round" class="bm${k}"/>`;
+    if (e.type === "attack") {
+      for (let i = 0; i < 12; i++) {
+        const [px, py] = iso(e.gx + 0.5 + (R2() - 0.5) * 4, e.gy + (R2() - 0.5) * 4, 10 + R2() * 20);
+        fx += debris(px, py, e.stomp + R2() * 0.4);
+      }
+      for (let i = 0; i < 4; i++) {
+        const [px, py] = iso(e.gx + 0.5 + (R2() - 0.5) * 7, e.gy + (R2() - 0.5) * 4, 6);
+        smokeFx += plume(px, py, e.stomp + 0.3 + i * 0.25, 5, 1, i === 0 ? "smF" : "");
+      }
 
-    // helicopter: flies in on a straight line, is hit at s+4.6, spirals down
-    const v = 80;
-    const tHit = s + 4.6;
-    const start = [hit[0] - flyDir * v * 5.5, hit[1]];
-    css.push(
-      keyframes(`hc${k}`, [
-        [tHit - 5.5, `${tr(start)};opacity:0`],
-        [tHit - 5, `${tr([hit[0] - flyDir * v * 5, hit[1]])};opacity:1`],
-        [tHit, `${tr(hit)};opacity:1`],
-        [tHit + 0.5, `${tr([hit[0] + flyDir * 14, hit[1] + 20], 0, ` rotate(${flyDir * 30}deg)`)};opacity:1`],
-        [tHit + 1.8, `${tr([hit[0] + flyDir * 40, hit[1] + 160], 0, ` rotate(${flyDir * 160}deg)`)};opacity:0`],
-      ]),
-      `.hc${k}{animation:hc${k} ${T}s linear infinite;opacity:0}`,
-      keyframes(`ex${k}`, [
-        [tHit - 0.05, "transform:scale(.1);opacity:0"],
-        [tHit, "transform:scale(.3);opacity:1"],
-        [tHit + 0.9, "transform:scale(1.6);opacity:0"],
-      ]),
-      `.ex${k}{animation:ex${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`
-    );
-    actors += `<g class="hc${k}"><g transform="scale(${flyDir},1)">${heli(t)}</g></g>
-      <g class="ex${k}"><circle cx="${hit[0].toFixed(1)}" cy="${hit[1].toFixed(1)}" r="26" fill="${C.red}"/><circle cx="${hit[0].toFixed(1)}" cy="${hit[1].toFixed(1)}" r="16" fill="#ffb36b"/><circle cx="${hit[0].toFixed(1)}" cy="${hit[1].toFixed(1)}" r="8" fill="${C.cream}"/></g>`;
+      // breath at a helicopter
+      const { hit, hitAt, flyDir } = e;
+      const len = Math.hypot(hit[0] - mouth[0], hit[1] - mouth[1]).toFixed(0);
+      defs += `<linearGradient id="beam${k}" gradientUnits="userSpaceOnUse" x1="${mouth[0].toFixed(1)}" y1="${mouth[1].toFixed(1)}" x2="${hit[0].toFixed(1)}" y2="${hit[1].toFixed(1)}"><stop offset="0" stop-color="#7a8cff"/><stop offset=".55" stop-color="#9b6bff"/><stop offset="1" stop-color="#c25cff"/></linearGradient>`;
+      css.push(
+        keyframes(`ch${k}`, [
+          [hitAt - 1.2, "transform:scale(.2);opacity:0"],
+          [hitAt - 0.5, "transform:scale(1.2);opacity:1"],
+          [hitAt + 0.7, "transform:scale(1);opacity:1"],
+          [hitAt + 1.1, "transform:scale(.2);opacity:0"],
+        ]),
+        `.ch${k}{animation:ch${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`,
+        keyframes(`bm${k}`, [
+          [hitAt - 0.45, `stroke-dashoffset:${len};opacity:0`],
+          [hitAt - 0.4, `stroke-dashoffset:${len};opacity:1`],
+          [hitAt, "stroke-dashoffset:0;opacity:1"],
+          [hitAt + 0.7, "stroke-dashoffset:0;opacity:1"],
+          [hitAt + 1.1, "stroke-dashoffset:0;opacity:0"],
+        ]),
+        `.bm${k}{animation:bm${k} ${T}s linear infinite;stroke-dasharray:${len};opacity:0}`
+      );
+      actors += `
+        <circle cx="${mouth[0].toFixed(1)}" cy="${mouth[1].toFixed(1)}" r="13" fill="url(#beam${k})" filter="url(#glow)" class="ch${k}"/>
+        <line x1="${mouth[0].toFixed(1)}" y1="${mouth[1].toFixed(1)}" x2="${hit[0].toFixed(1)}" y2="${hit[1].toFixed(1)}" stroke="url(#beam${k})" stroke-width="16" stroke-linecap="round" filter="url(#glow)" class="bm${k}"/>
+        <line x1="${mouth[0].toFixed(1)}" y1="${mouth[1].toFixed(1)}" x2="${hit[0].toFixed(1)}" y2="${hit[1].toFixed(1)}" stroke="#eef0ff" stroke-width="4" stroke-linecap="round" class="bm${k}"/>`;
+
+      const v = 80;
+      css.push(
+        keyframes(`hc${k}`, [
+          [hitAt - 5.5, `${tr([hit[0] - flyDir * v * 5.5, hit[1]])};opacity:0`],
+          [hitAt - 5, `${tr([hit[0] - flyDir * v * 5, hit[1]])};opacity:1`],
+          [hitAt, `${tr(hit)};opacity:1`],
+          [hitAt + 0.5, `${tr([hit[0] + flyDir * 14, hit[1] + 20], 0, ` rotate(${flyDir * 30}deg)`)};opacity:1`],
+          [hitAt + 1.8, `${tr([hit[0] + flyDir * 40, hit[1] + 160], 0, ` rotate(${flyDir * 160}deg)`)};opacity:0`],
+        ]),
+        `.hc${k}{animation:hc${k} ${T}s linear infinite;opacity:0}`,
+        keyframes(`ex${k}`, [
+          [hitAt - 0.05, "transform:scale(.1);opacity:0"],
+          [hitAt, "transform:scale(.3);opacity:1"],
+          [hitAt + 0.9, "transform:scale(1.6);opacity:0"],
+        ]),
+        `.ex${k}{animation:ex${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`
+      );
+      actors += `<g class="hc${k}"><g transform="scale(${flyDir},1)">${heli(t)}</g></g>
+        <g class="ex${k}"><circle cx="${hit[0].toFixed(1)}" cy="${hit[1].toFixed(1)}" r="26" fill="${C.red}"/><circle cx="${hit[0].toFixed(1)}" cy="${hit[1].toFixed(1)}" r="16" fill="#ffb36b"/><circle cx="${hit[0].toFixed(1)}" cy="${hit[1].toFixed(1)}" r="8" fill="${C.cream}"/></g>`;
+    } else {
+      /* ---------- BERSERK: charge, 360° ultra beam, shockwave, city-wide ruin ---------- */
+      const { beamStart, beamEnd, a0, chopper, chopperHit } = e;
+      css.push(
+        keyframes(`au${k}`, [
+          [s + 3.6, "transform:scale(.4);opacity:0"],
+          [s + 4.2, "transform:scale(.9);opacity:.6"],
+          [s + 4.6, "transform:scale(1.15);opacity:.35"],
+          [s + 5.0, "transform:scale(.95);opacity:.75"],
+          [beamStart, "transform:scale(1.25);opacity:.95"],
+          [beamEnd, "transform:scale(1.2);opacity:.9"],
+          [beamEnd + 0.8, "transform:scale(.6);opacity:0"],
+        ]),
+        `.au${k}{animation:au${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`,
+        keyframes(`orb${k}`, [
+          [s + 4.0, "transform:scale(.1);opacity:0"],
+          [beamStart - 0.05, "transform:scale(1.6);opacity:1"],
+          [beamEnd, "transform:scale(1.3);opacity:1"],
+          [beamEnd + 0.3, "transform:scale(.1);opacity:0"],
+        ]),
+        `.orb${k}{animation:orb${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`,
+        keyframes(`ub${k}`, [
+          [beamStart - 0.01, `transform:rotate(${a0}deg);opacity:0`],
+          [beamStart, `transform:rotate(${a0}deg);opacity:1`],
+          [beamEnd, `transform:rotate(${a0 + 360}deg);opacity:1`],
+          [beamEnd + 0.25, `transform:rotate(${a0 + 360}deg);opacity:0`],
+        ]),
+        `.ub${k}{animation:ub${k} ${T}s linear infinite;opacity:0}`,
+        keyframes(`sw${k}`, [
+          [beamStart + 0.1, "transform:scale(.01);opacity:0"],
+          [beamStart + 0.15, "transform:scale(.02);opacity:1"],
+          [beamStart + 2.15, "transform:scale(1.3);opacity:0"],
+        ]),
+        `.sw${k}{animation:sw${k} ${T}s linear infinite;opacity:0}`,
+        keyframes(`fl${k}`, [
+          [beamStart - 0.02, "opacity:0"],
+          [beamStart + 0.08, "opacity:.3"],
+          [beamStart + 0.7, "opacity:0"],
+        ]),
+        `.fl${k}{animation:fl${k} ${T}s linear infinite;opacity:0}`
+      );
+      defs += `<linearGradient id="ultra" x1="0" x2="1"><stop offset="0" stop-color="#eef0ff"/><stop offset=".08" stop-color="#9aa6ff"/><stop offset=".5" stop-color="#9b6bff"/><stop offset="1" stop-color="#c25cff" stop-opacity="0"/></linearGradient>`;
+      actors += `
+        <circle cx="${mouth[0].toFixed(1)}" cy="${mouth[1].toFixed(1)}" r="16" fill="#c9b8ff" filter="url(#glow)" class="orb${k}"/>
+        <g transform="translate(${mouth[0].toFixed(1)} ${mouth[1].toFixed(1)})"><g class="ub${k}">
+          <rect x="0" y="-13" width="1400" height="26" rx="13" fill="url(#ultra)" filter="url(#glow)"/>
+          <rect x="0" y="-3.5" width="1400" height="7" rx="3.5" fill="url(#ultra)"/>
+        </g></g>
+        <g transform="translate(${land[0].toFixed(1)} ${land[1].toFixed(1)})"><g class="sw${k}">
+          <ellipse rx="1000" ry="320" fill="none" stroke="#9b6bff" stroke-width="7" vector-effect="non-scaling-stroke" filter="url(#glow)"/>
+          <ellipse rx="1000" ry="320" fill="none" stroke="#eef0ff" stroke-width="2" vector-effect="non-scaling-stroke"/>
+        </g></g>
+        <rect width="${W}" height="${H}" fill="#9b6bff" class="fl${k}"/>`;
+
+      // the news helicopter caught by the sweep
+      const enter = [chopper[0] + (chopper[0] > 500 ? 1 : -1) * 520, chopper[1] - 30];
+      const hd = chopper[0] > enter[0] ? 1 : -1;
+      css.push(
+        keyframes(`hk${k}`, [
+          [s + 0.5, `${tr(enter)};opacity:0`],
+          [s + 1.0, `${tr(enter)};opacity:1`],
+          [s + 3.6, `${tr(chopper)};opacity:1`],
+          [chopperHit, `${tr(chopper)};opacity:1`],
+          [chopperHit + 0.5, `${tr([chopper[0] + hd * 14, chopper[1] + 22], 0, ` rotate(${hd * 35}deg)`)};opacity:1`],
+          [chopperHit + 1.8, `${tr([chopper[0] + hd * 40, chopper[1] + 170], 0, ` rotate(${hd * 170}deg)`)};opacity:0`],
+        ]),
+        `.hk${k}{animation:hk${k} ${T}s linear infinite;opacity:0}`,
+        keyframes(`hx${k}`, [
+          [chopperHit - 0.05, "transform:scale(.1);opacity:0"],
+          [chopperHit, "transform:scale(.3);opacity:1"],
+          [chopperHit + 0.9, "transform:scale(1.7);opacity:0"],
+        ]),
+        `.hx${k}{animation:hx${k} ${T}s linear infinite;transform-box:fill-box;transform-origin:center;opacity:0}`
+      );
+      actors += `<g class="hk${k}"><g transform="scale(${hd},1)">${heli(t)}</g></g>
+        <g class="hx${k}"><circle cx="${chopper[0].toFixed(1)}" cy="${chopper[1].toFixed(1)}" r="28" fill="${C.red}"/><circle cx="${chopper[0].toFixed(1)}" cy="${chopper[1].toFixed(1)}" r="17" fill="#ffb36b"/><circle cx="${chopper[0].toFixed(1)}" cy="${chopper[1].toFixed(1)}" r="8" fill="${C.cream}"/></g>`;
+
+      // city-wide smoke, fires and debris, arriving with the shockwave
+      for (let i = 0; i < 26; i++) {
+        const gx = Math.floor(R2() * NW);
+        const gy = Math.floor(R2() * 7);
+        const [px, py] = iso(gx + 0.5, gy + 0.5, 4);
+        const delay = beamStart + 0.2 + Math.hypot(px - land[0], py - land[1]) / 650;
+        smokeFx += plume(px, py, delay + R2() * 0.4, 6, 1.2);
+        if (i % 2 === 0) smokeFx += fire(px, py + 2, delay + 0.1);
+      }
+      for (let i = 0; i < 34; i++) {
+        const gx = R2() * NW;
+        const gy = R2() * 7;
+        const [px, py] = iso(gx, gy, 10 + R2() * 25);
+        fx += debris(px, py, beamStart + 0.15 + Math.hypot(px - land[0], py - land[1]) / 650, 1.4);
+      }
+    }
   }
 
-  // two helicopters that get away
-  const survivors = [
-    { from: [-60, 178], to: [1060, 196], t0: 2, t1: 20 },
-    { from: [1060, 214], to: [-60, 186], t0: 17, t1: 34 },
-  ];
-  survivors.forEach((h, i) => {
-    const d = h.to[0] > h.from[0] ? 1 : -1;
-    css.push(
-      keyframes(`hs${i}`, [
-        [h.t0 - 0.01, `${tr(h.from)};opacity:0`],
-        [h.t0, `${tr(h.from)};opacity:1`],
-        [h.t1, `${tr(h.to)};opacity:1`],
-        [h.t1 + 0.01, `${tr(h.to)};opacity:0`],
-      ]),
-      `.hs${i}{animation:hs${i} ${T}s linear infinite;opacity:0}`
-    );
-    actors += `<g class="hs${i}"><g transform="scale(${d},1)">${heli(t)}</g></g>`;
-  });
+  // helicopters that get away (only during normal attacks, never in a berserk sweep)
+  events
+    .filter((e) => e.type === "attack")
+    .slice(0, 2)
+    .forEach((e, i) => {
+      const ltr = i % 2 === 0;
+      const from = ltr ? [-60, 178 + R2() * 30] : [1060, 190 + R2() * 30];
+      const to = ltr ? [1060, 180 + R2() * 30] : [-60, 176 + R2() * 30];
+      const [t0, t1] = [e.s + 0.4, e.s + 10.4];
+      css.push(
+        keyframes(`hs${i}`, [
+          [t0 - 0.01, `${tr(from)};opacity:0`],
+          [t0, `${tr(from)};opacity:1`],
+          [t1, `${tr(to)};opacity:1`],
+          [t1 + 0.01, `${tr(to)};opacity:0`],
+        ]),
+        `.hs${i}{animation:hs${i} ${T}s linear infinite;opacity:0}`
+      );
+      actors += `<g class="hs${i}"><g transform="scale(${ltr ? 1 : -1},1)">${heli(t)}</g></g>`;
+    });
 
-  // Freeze-frame for viewers with "reduce motion" on (all animations are disabled
-  // for them): show the first attack mid-breath instead of an empty city.
-  const a0 = attacks[0];
+  // Freeze-frame for "reduce motion" (all animations off): the first attack mid-breath.
+  const fa = firstAttack;
   css.push(`@media (prefers-reduced-motion:reduce){
-    .kz0{opacity:1;${tr(a0.land)}}
-    .bm0{opacity:1;stroke-dashoffset:0}
-    .ch0{opacity:1}
-    .ex0{opacity:.9;transform:scale(1)}
-    .smash0{transform:scaleY(.1) skewX(-12deg)}
-    .hs0{opacity:1;${tr([500, 186])}}
+    .kz${fa.k}{opacity:1;${tr(fa.land)}}
+    .rs${fa.k}{transform:none}
+    .bm${fa.k}{opacity:1;stroke-dashoffset:0}
+    .ch${fa.k}{opacity:1}
+    .ex${fa.k}{opacity:.9;transform:scale(1)}
+    .crF{transform:skewX(-14deg) scaleY(.1)}
+    .smF{opacity:.55;transform:translate(4px,-40px) scale(1.5)}
   }`);
 
   const plate = [iso(0, 0), iso(NW, 0), iso(NW, 7), iso(0, 7)].map((q) => q.map((v) => v.toFixed(1)).join(",")).join(" ");
@@ -362,11 +615,15 @@ function city(t) {
   const body = `
     ${eyebrow(40, 44, "+", "Contributions · 3d city", t.muted, t.accentInk)}
     ${statRow(t, 108)}
-    ${sea(t, -4.6, -0.35, "wv")}
-    <polygon points="${plate}" fill="none" stroke="${t.line}" stroke-width="1.5" stroke-dasharray="4 5" transform="translate(0 6)"/>
-    ${bars}
-    ${sea(t, 7.35, 11.4, "wv")}
+    <g class="quake">
+      ${sea(t, -4.6, -0.35, "wv")}
+      <polygon points="${plate}" fill="none" stroke="${t.line}" stroke-width="1.5" stroke-dasharray="4 5" transform="translate(0 6)"/>
+      ${bars}
+      ${sea(t, 7.35, 11.4, "wv")}
+    </g>
+    ${fx}
     ${actors}
+    ${smokeFx}
     ${text("mono", "LESS", 820, H - 34, 9.5, { anchor: "end", ls: 1.4, fill: t.muted })}${legend}${text("mono", "MORE", 928, H - 34, 9.5, { ls: 1.4, fill: t.muted })}
     ${text("mono", `UPDATED ${fmt(days.at(-1).date).toUpperCase()}`, 40, H - 34, 9.5, { ls: 1.4, fill: t.muted })}`;
 
@@ -380,7 +637,7 @@ function city(t) {
       @keyframes rotor{from{transform:scaleX(1)}to{transform:scaleX(.15)}}.rotor{animation:rotor .12s linear infinite alternate;transform-box:fill-box;transform-origin:center}
       ${css.join("\n")}`,
     title: `${cal.totalContributions} contributions in the past year`,
-    desc: `Isometric 3D chart of ${LOGIN}'s GitHub contributions between two seas. Each day is a tower whose height follows its contribution count. A giant lizard kaiju surfaces from the sea at random spots, flattens blocks of towers that later regrow, and shoots down helicopters with a blue-purple breath beam. Longest streak ${longest} days, ${activeDays} active days, best day ${best.contributionCount} on ${fmt(best.date)}.`,
+    desc: `Isometric 3D chart of ${LOGIN}'s GitHub contributions between two seas. Each day is a tower whose height follows its contribution count. A giant lizard kaiju rises from the sea at random spots, shakes the ground, crumbles blocks of towers into smoke, and shoots down helicopters with a blue-purple breath; once per loop it goes berserk and sweeps a 360-degree beam that levels the whole city before it rebuilds. Longest streak ${longest} days, ${activeDays} active days, best day ${best.contributionCount} on ${fmt(best.date)}.`,
     body,
   });
 }
@@ -389,4 +646,4 @@ const out = new URL("../assets/", import.meta.url);
 mkdirSync(out, { recursive: true });
 for (const t of Object.values(THEMES)) writeFileSync(new URL(`contrib-city-${t.name}.svg`, out), city(t));
 console.log(`✓ contrib-city (${cal.totalContributions} contributions, ${activeDays} active days, longest streak ${longest}d)`);
-console.log(`  attacks today: ${attacks.map((a) => `${a.side} sea at week ${a.gx}, firing ${a.dir > 0 ? "right" : "left"}`).join("; ")}`);
+console.log(`  loop ${T}s: ${events.map((e) => `${e.type} @${e.s.toFixed(1)}s from ${e.side} sea (week ${e.gx})`).join(", ")}`);
